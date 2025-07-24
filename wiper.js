@@ -6,13 +6,17 @@ const { v4: uuidv4 } = require('uuid');
 const HOMESERVER_URL = process.env.HOMESERVER_URL;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const ROOM_ID = process.env.ROOM_ID;
-const REDACT_DAYS = parseInt(process.env.REDACT_DAYS) || 7;
+// Parse --days argument
+const daysArgIndex = process.argv.findIndex(arg => arg === '--days');
+const daysFromArgs = daysArgIndex !== -1 && process.argv[daysArgIndex + 1] ? parseInt(process.argv[daysArgIndex + 1]) : null;
+const REDACT_DAYS = daysFromArgs || parseInt(process.env.REDACT_DAYS) || 7;
 const PURGE_DAYS = parseInt(process.env.PURGE_DAYS) || 30;
 const LIMIT = parseInt(process.env.LIMIT) || 100;
-const RATE_LIMIT_DELAY = parseInt(process.env.RATE_LIMIT_DELAY) || 200;
+const RATE_LIMIT_DELAY = parseInt(process.env.RATE_LIMIT_DELAY) || 500;
 
 // Check for --commit flag to override dry-run
 const DRY_RUN = !process.argv.includes('--commit') && (process.env.DRY_RUN !== 'false');
+const DEBUG = process.argv.includes('--debug');
 
 // Validation functions
 function validateEnvironment() {
@@ -85,7 +89,14 @@ async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
         throw error;
       }
       
-      const delay = baseDelay * Math.pow(2, attempt - 1);
+      let delay = baseDelay * Math.pow(2, attempt - 1);
+      
+      // Handle rate limiting (429) with server-specified delay
+      if (error.response && error.response.status === 429) {
+        const retryAfter = error.response.data?.retry_after_ms || 1000;
+        delay = Math.max(delay, retryAfter);
+      }
+      
       console.warn(`⚠️  Request failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
@@ -102,21 +113,30 @@ async function getOldEvents(roomId) {
       axios.get(url, { headers: HEADERS, params, timeout: 30000 })
     );
     const data = resp.data;
+    if (DEBUG) console.log(`Response: chunk length=${data.chunk?.length}, start=${data.start}, end=${data.end}`);
 
     if (!data.chunk || data.chunk.length === 0) break;
 
     let stopPagination = false;
 
     for (const event of data.chunk) {
+      if (DEBUG) console.log(`Event: type=${event.type}, redacted=${!!event?.unsigned?.redacted_because}, ts=${event.origin_server_ts}`);
+      
       // Skip already redacted or redaction events
-      if (event?.unsigned?.redacted_because || event.type === 'm.room.redaction') continue;
+      if (event?.unsigned?.redacted_because || event.type === 'm.room.redaction') {
+        if (DEBUG) console.log(`  Skipping: ${event?.unsigned?.redacted_because ? 'redacted' : 'redaction event'}`);
+        continue;
+      }
 
-      if (event.type === 'm.room.message' && event.origin_server_ts) {
+      if ((event.type === 'm.room.message' || event.type === 'm.room.encrypted') && event.origin_server_ts) {
+        if (DEBUG) console.log(`  Message event: ts=${event.origin_server_ts}, cutoff=${redactCutoffTs}, include=${event.origin_server_ts < redactCutoffTs}`);
         if (event.origin_server_ts < redactCutoffTs) {
           eventsToRedact.push(event.event_id);
         } else {
           stopPagination = true; // We reached newer messages
         }
+      } else {
+        if (DEBUG) console.log(`  Skipping: not a message event or missing timestamp`);
       }
     }
 
@@ -131,11 +151,18 @@ async function redactEvent(roomId, eventId) {
   const url = `${HOMESERVER_URL}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/redact/${eventId}/${uuidv4()}`;
   try {
     await retryWithBackoff(() => 
-      axios.post(url, {}, { headers: HEADERS, timeout: 30000 })
+      axios.put(url, {}, { headers: HEADERS, timeout: 30000 })
     );
     return true;
   } catch (err) {
-    console.error(`Failed to redact ${eventId}:`, err.response ? err.response.status : err.message);
+    if (err.response) {
+      console.error(`Failed to redact ${eventId}: HTTP ${err.response.status} - ${err.response.statusText}`);
+      console.error(`Response body:`, err.response.data);
+    } else if (err.request) {
+      console.error(`Failed to redact ${eventId}: No response received - ${err.message}`);
+    } else {
+      console.error(`Failed to redact ${eventId}: ${err.message}`);
+    }
     return false;
   }
 }
@@ -172,6 +199,7 @@ async function main() {
 
   console.log(`Fetching messages older than ${REDACT_DAYS} days for redaction in room ${ROOM_ID}...`);
   const oldEvents = await getOldEvents(ROOM_ID);
+  if (DEBUG) console.log('old events', oldEvents);
   const total = oldEvents.length;
   console.log(`Found ${total} events to redact.`);
 
