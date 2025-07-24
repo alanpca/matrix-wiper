@@ -8,11 +8,11 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const ROOM_ID = process.env.ROOM_ID;
 // Parse --days argument
 const daysArgIndex = process.argv.findIndex(arg => arg === '--days');
-const daysFromArgs = daysArgIndex !== -1 && process.argv[daysArgIndex + 1] ? parseInt(process.argv[daysArgIndex + 1]) : null;
-const REDACT_DAYS = daysFromArgs || parseInt(process.env.REDACT_DAYS) || 7;
+const daysFromArgs = daysArgIndex !== -1 && process.argv[daysArgIndex + 1] !== undefined ? parseInt(process.argv[daysArgIndex + 1]) : null;
+const REDACT_DAYS = daysFromArgs !== null ? daysFromArgs : (parseInt(process.env.REDACT_DAYS) || 7);
 const PURGE_DAYS = parseInt(process.env.PURGE_DAYS) || 30;
 const LIMIT = parseInt(process.env.LIMIT) || 100;
-const RATE_LIMIT_DELAY = parseInt(process.env.RATE_LIMIT_DELAY) || 500;
+const RATE_LIMIT_DELAY = parseInt(process.env.RATE_LIMIT_DELAY) || 100;
 
 // Check for --commit flag to override dry-run
 const DRY_RUN = !process.argv.includes('--commit') && (process.env.DRY_RUN !== 'false');
