@@ -1,0 +1,22 @@
+{
+  "name": "matrix-wiper",
+  "version": "1.0.0",
+  "description": "A tool to redact and purge old messages from Matrix rooms",
+  "main": "wiper.js",
+  "scripts": {
+    "start": "node wiper.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.0.0",
+    "uuid": "^9.0.0"
+  },
+  "keywords": [
+    "matrix",
+    "chat",
+    "cleanup",
+    "admin"
+  ],
+  "author": "",
+  "license": "ISC"
+}
